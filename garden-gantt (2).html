@@ -1,0 +1,952 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>🌱 Garden Gantt Calendar</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: Georgia, serif; background: #fafaf7; }
+    ::-webkit-scrollbar { height: 6px; width: 6px; }
+    ::-webkit-scrollbar-track { background: #f1f5f9; }
+    ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useMemo, useEffect, useRef, useCallback } = React;
+
+    // ── JSONBin sync ───────────────────────────────────────────────────────────
+    // Stores your API key + bin ID in localStorage on each device.
+    // Data (checked tasks + promoted optional) lives in JSONBin cloud.
+
+    const LS_KEY    = "garden-jsonbin-key";
+    const LS_BIN    = "garden-jsonbin-bin";
+    const JSONBIN   = "https://api.jsonbin.io/v3";
+
+    function lsGet(k, fb) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : fb; } catch(_) { return fb; } }
+    function lsSet(k, v)  { try { localStorage.setItem(k, JSON.stringify(v)); } catch(_) {} }
+
+    async function binCreate(apiKey, data) {
+      const r = await fetch(`${JSONBIN}/b`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Master-Key": apiKey, "X-Bin-Name": "garden-gantt", "X-Bin-Private": "true" },
+        body: JSON.stringify(data),
+      });
+      if (!r.ok) throw new Error("Create failed: " + r.status);
+      const j = await r.json();
+      return j.metadata.id;
+    }
+
+    async function binRead(apiKey, binId) {
+      const r = await fetch(`${JSONBIN}/b/${binId}/latest`, {
+        headers: { "X-Master-Key": apiKey },
+      });
+      if (!r.ok) throw new Error("Read failed: " + r.status);
+      const j = await r.json();
+      return j.record;
+    }
+
+    async function binWrite(apiKey, binId, data) {
+      const r = await fetch(`${JSONBIN}/b/${binId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", "X-Master-Key": apiKey },
+        body: JSON.stringify(data),
+      });
+      if (!r.ok) throw new Error("Write failed: " + r.status);
+    }
+
+    // ── Constants ──────────────────────────────────────────────────────────────
+    const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    const WPM    = [4,4,5,4,4,4,5,4,4,5,4,4];
+    const TOTAL_WEEKS = 52;
+
+    function monthToWeek(month, day = 1) {
+      let w = 0;
+      for (let i = 0; i < month; i++) w += WPM[i];
+      return w + Math.floor((day / 30) * WPM[month]);
+    }
+
+    const TASK_COLORS = {
+      "Indoor Seed Start": { bg: "#7c3aed" },
+      "Direct Sow":        { bg: "#d97706" },
+      "Transplant":        { bg: "#16a34a" },
+      "Thin/Pot Up":       { bg: "#0891b2" },
+      "Harvest":           { bg: "#dc2626" },
+      "Prune/Trim":        { bg: "#db2777" },
+      "Buy Starts":        { bg: "#65a30d" },
+      "Fertilize":         { bg: "#9333ea" },
+      "Repot":             { bg: "#b45309" },
+      "Deadhead":          { bg: "#c026d3" },
+      "Overwinter Care":   { bg: "#475569" },
+    };
+
+    const CATEGORY_COLORS = {
+      "Vegetables":         "#f59e0b",
+      "Brassicas":          "#3b82f6",
+      "Root Vegetables":    "#f97316",
+      "Leafy Greens":       "#22c55e",
+      "Fruits":             "#ec4899",
+      "Flowers":            "#a855f7",
+      "Established Plants": "#64748b",
+      "Optional":           "#94a3b8",
+    };
+    const CAT_BG = {
+      "Vegetables":         "#fef3c7",
+      "Brassicas":          "#dbeafe",
+      "Root Vegetables":    "#ffedd5",
+      "Leafy Greens":       "#dcfce7",
+      "Fruits":             "#fce7f3",
+      "Flowers":            "#f3e8ff",
+      "Established Plants": "#f1f5f9",
+      "Optional":           "#f8fafc",
+    };
+
+    const FRONT_LF = monthToWeek(2, 22);
+    const FRONT_FF = monthToWeek(10, 8);
+    const BACK_LF  = monthToWeek(3, 1);
+    const BACK_FF  = monthToWeek(10, 1);
+
+    // ── Plant data ─────────────────────────────────────────────────────────────
+    const OPTIONAL_PLANTS = [
+      { name: "Tomatoes", targetCategory: "Vegetables", location: "front", notes: "Ed Hume · plant after last frost", tasks: [
+        { type: "Indoor Seed Start", start: [2,1],  end: [3,15] },
+        { type: "Transplant",        start: [4,22], end: [5,15] },
+        { type: "Harvest",           start: [7,1],  end: [10,1] },
+      ]},
+      { name: "Peppers", targetCategory: "Vegetables", location: "front", notes: "Ed Hume · needs warm soil", tasks: [
+        { type: "Indoor Seed Start", start: [2,1],  end: [3,1]  },
+        { type: "Transplant",        start: [5,1],  end: [5,22] },
+        { type: "Harvest",           start: [7,15], end: [10,1] },
+      ]},
+      { name: "Potatoes", targetCategory: "Root Vegetables", location: "front", notes: "Ed Hume", tasks: [
+        { type: "Direct Sow", start: [2,22], end: [3,22], label: "Plant Chits" },
+        { type: "Prune/Trim", start: [5,1],  end: [6,1],  label: "Hill Up" },
+        { type: "Harvest",    start: [6,22], end: [8,31] },
+      ]},
+      { name: "Marigold", targetCategory: "Flowers", location: "front", notes: "Ed Hume · great companion plant", tasks: [
+        { type: "Indoor Seed Start", start: [3,1],  end: [3,22] },
+        { type: "Direct Sow",        start: [3,22], end: [4,22] },
+        { type: "Transplant",        start: [4,22], end: [5,7]  },
+        { type: "Harvest",           start: [6,1],  end: [10,1], label: "Cut flowers" },
+        { type: "Deadhead",          start: [6,1],  end: [10,1] },
+      ]},
+      { name: "Dianthus / Carnation", targetCategory: "Flowers", location: "front", notes: "Ed Hume · fragrant", tasks: [
+        { type: "Indoor Seed Start", start: [1,22], end: [3,1]  },
+        { type: "Transplant",        start: [3,22], end: [4,22] },
+        { type: "Harvest",           start: [5,1],  end: [8,31], label: "Cut flowers" },
+        { type: "Deadhead",          start: [5,1],  end: [9,1]  },
+      ]},
+    ];
+
+    const PLANTS = [
+      { name: "Green Beans Contender", category: "Vegetables", location: "front", notes: "Ed Hume · Bush · 50 days", tasks: [
+        { type: "Direct Sow", start: [3,22], end: [6,15], label: "Direct Sow (succession)" },
+        { type: "Harvest",    start: [5,22], end: [8,15] },
+      ]},
+      { name: "Green Beans Jade", category: "Vegetables", location: "front", notes: "Ed Hume · Bush · 53 days", tasks: [
+        { type: "Direct Sow", start: [3,22], end: [6,15], label: "Direct Sow (succession)" },
+        { type: "Harvest",    start: [5,28], end: [8,22] },
+      ]},
+      { name: "Winter Squash Harvest Mix", category: "Vegetables", location: "front", notes: "Ed Hume", tasks: [
+        { type: "Indoor Seed Start", start: [3,22], end: [4,7]  },
+        { type: "Transplant",        start: [4,22], end: [5,15] },
+        { type: "Harvest",           start: [8,15], end: [10,15] },
+      ]},
+      { name: "Gourd Small Fancy Mix", category: "Vegetables", location: "front", notes: "Ed Hume · ~100 days", tasks: [
+        { type: "Indoor Seed Start", start: [3,22], end: [4,7]  },
+        { type: "Transplant",        start: [4,22], end: [5,15] },
+        { type: "Harvest",           start: [8,22], end: [10,22] },
+      ]},
+      { name: "Pumpkin Howden", category: "Vegetables", location: "front", notes: "Ed Hume · Jack o Lantern · 115 days", tasks: [
+        { type: "Indoor Seed Start", start: [3,15], end: [4,1]  },
+        { type: "Transplant",        start: [4,22], end: [5,7]  },
+        { type: "Harvest",           start: [9,15], end: [10,31] },
+      ]},
+      { name: "Pumpkin Casper", category: "Vegetables", location: "front", notes: "Ed Hume · White · 100 days", tasks: [
+        { type: "Indoor Seed Start", start: [3,22], end: [4,7]  },
+        { type: "Transplant",        start: [4,22], end: [5,7]  },
+        { type: "Harvest",           start: [9,1],  end: [10,15] },
+      ]},
+      { name: "Corn Early Sunglow", category: "Vegetables", location: "front", notes: "Ed Hume · 63 days · early harvest", tasks: [
+        { type: "Direct Sow",  start: [3,22], end: [4,15] },
+        { type: "Thin/Pot Up", start: [4,7],  end: [4,22] },
+        { type: "Harvest",     start: [6,22], end: [7,22] },
+      ]},
+      { name: "Broccoli Destiny", category: "Brassicas", location: "back", notes: "Starts in hand · x4", tasks: [
+        { type: "Thin/Pot Up",       start: [1,28], end: [2,22], label: "Pot Up (starts in hand!)" },
+        { type: "Transplant",        start: [3,1],  end: [3,22] },
+        { type: "Indoor Seed Start", start: [5,15], end: [6,15], label: "Start (fall crop)" },
+        { type: "Transplant",        start: [6,22], end: [7,15], label: "Transplant (fall)" },
+        { type: "Harvest",           start: [5,1],  end: [6,30] },
+        { type: "Harvest",           start: [9,1],  end: [11,1], label: "Harvest (fall)" },
+      ]},
+      { name: "Brussels Sprouts Jade Cross", category: "Brassicas", location: "back", notes: "Starts in hand · x4", tasks: [
+        { type: "Thin/Pot Up", start: [1,28], end: [2,22], label: "Pot Up (starts in hand!)" },
+        { type: "Transplant",  start: [3,15], end: [4,1]  },
+        { type: "Prune/Trim",  start: [8,1],  end: [9,1]  },
+        { type: "Harvest",     start: [9,22], end: [11,30] },
+      ]},
+      { name: "Cauliflower", category: "Brassicas", location: "back", notes: "Ed Hume", tasks: [
+        { type: "Indoor Seed Start", start: [1,15], end: [2,15] },
+        { type: "Transplant",        start: [3,7],  end: [3,31] },
+        { type: "Harvest",           start: [5,22], end: [7,1]  },
+      ]},
+      { name: "Carrots Rainbow Blend", category: "Root Vegetables", location: "front", notes: "Ed Hume", tasks: [
+        { type: "Direct Sow",  start: [2,22], end: [3,22] },
+        { type: "Thin/Pot Up", start: [3,22], end: [4,22] },
+        { type: "Direct Sow",  start: [6,22], end: [7,15], label: "Direct Sow (fall)" },
+        { type: "Harvest",     start: [6,1],  end: [7,31] },
+        { type: "Harvest",     start: [9,22], end: [11,8], label: "Harvest (fall)" },
+      ]},
+      { name: "Lettuce Great Lakes Head", category: "Leafy Greens", location: "back", notes: "Ed Hume seeds", tasks: [
+        { type: "Indoor Seed Start", start: [1,1],  end: [2,1]  },
+        { type: "Transplant",        start: [2,22], end: [3,22] },
+        { type: "Direct Sow",        start: [2,22], end: [4,15] },
+        { type: "Thin/Pot Up",       start: [3,1],  end: [4,1]  },
+        { type: "Harvest",           start: [4,1],  end: [6,30] },
+        { type: "Direct Sow",        start: [7,22], end: [8,22], label: "Direct Sow (fall)" },
+        { type: "Harvest",           start: [9,1],  end: [11,1], label: "Harvest (fall)" },
+      ]},
+      { name: "Lettuce Buttercrunch", category: "Leafy Greens", location: "back", notes: "Starts in hand · x4", tasks: [
+        { type: "Thin/Pot Up", start: [1,28], end: [2,15], label: "Pot Up (starts in hand!)" },
+        { type: "Transplant",  start: [2,22], end: [3,15] },
+        { type: "Harvest",     start: [3,22], end: [6,15] },
+        { type: "Direct Sow",  start: [7,22], end: [8,22], label: "Direct Sow (fall)" },
+        { type: "Harvest",     start: [9,1],  end: [11,1], label: "Harvest (fall)" },
+      ]},
+      { name: "Arugula", category: "Leafy Greens", location: "back", notes: "Ed Hume", tasks: [
+        { type: "Direct Sow",  start: [1,22], end: [4,22] },
+        { type: "Thin/Pot Up", start: [2,22], end: [4,1]  },
+        { type: "Harvest",     start: [2,22], end: [5,31] },
+        { type: "Direct Sow",  start: [7,22], end: [9,1],  label: "Direct Sow (fall)" },
+        { type: "Harvest",     start: [8,22], end: [11,1], label: "Harvest (fall)" },
+      ]},
+      { name: "Peas Sugar Snap", category: "Fruits", location: "front", notes: "Starts in hand · x4", tasks: [
+        { type: "Thin/Pot Up", start: [1,28], end: [2,15], label: "Pot Up (starts in hand!)" },
+        { type: "Transplant",  start: [2,15], end: [3,7]  },
+        { type: "Harvest",     start: [5,1],  end: [6,30] },
+        { type: "Direct Sow",  start: [7,22], end: [8,7],  label: "Direct Sow (fall)" },
+        { type: "Harvest",     start: [9,1],  end: [10,15], label: "Harvest (fall)" },
+      ]},
+      { name: "Strawberries", category: "Fruits", location: "front", notes: "Established", tasks: [
+        { type: "Prune/Trim", start: [1,15], end: [2,15], label: "Prune (early spring)" },
+        { type: "Fertilize",  start: [2,15], end: [3,7]  },
+        { type: "Harvest",    start: [5,22], end: [7,22] },
+        { type: "Prune/Trim", start: [8,1],  end: [8,31], label: "Runner removal" },
+      ]},
+      { name: "Blueberry Bush", category: "Fruits", location: "front", notes: "Established", tasks: [
+        { type: "Prune/Trim", start: [1,1],  end: [2,15], label: "Prune (dormant)" },
+        { type: "Fertilize",  start: [2,22], end: [3,22], label: "Acidic fertilizer" },
+        { type: "Harvest",    start: [6,22], end: [8,31] },
+      ]},
+      { name: "Raspberry Bush", category: "Fruits", location: "front", notes: "Established", tasks: [
+        { type: "Prune/Trim", start: [1,1],  end: [2,15], label: "Prune (dormant)" },
+        { type: "Fertilize",  start: [2,22], end: [3,22] },
+        { type: "Harvest",    start: [6,1],  end: [8,31] },
+        { type: "Prune/Trim", start: [9,1],  end: [10,1], label: "Cut fall canes" },
+      ]},
+      { name: "Apple Tree", category: "Fruits", location: "front", notes: "Established", tasks: [
+        { type: "Prune/Trim",  start: [1,1],  end: [2,15], label: "Winter prune (dormant)" },
+        { type: "Fertilize",   start: [2,22], end: [3,22] },
+        { type: "Thin/Pot Up", start: [5,15], end: [6,15], label: "Thin fruit clusters" },
+        { type: "Harvest",     start: [8,15], end: [10,15] },
+      ]},
+      { name: "Cherry Trees x2", category: "Fruits", location: "front", notes: "Established", tasks: [
+        { type: "Prune/Trim", start: [1,1],  end: [2,1],  label: "Winter prune (dormant)" },
+        { type: "Fertilize",  start: [2,22], end: [3,15] },
+        { type: "Harvest",    start: [6,15], end: [7,22] },
+      ]},
+      { name: "Bachelor Button Polka Dot", category: "Flowers", location: "front", notes: "Ed Hume · cold tolerant", tasks: [
+        { type: "Direct Sow",  start: [2,1],  end: [3,22], label: "Direct Sow (cool soil ok)" },
+        { type: "Thin/Pot Up", start: [3,1],  end: [4,1]  },
+        { type: "Harvest",     start: [5,1],  end: [8,15], label: "Cut flowers" },
+        { type: "Deadhead",    start: [5,15], end: [8,31] },
+        { type: "Direct Sow",  start: [7,1],  end: [7,22], label: "Sow (fall flush)" },
+      ]},
+      { name: "Cosmos Bright Lights Mix", category: "Flowers", location: "front", notes: "Ed Hume", tasks: [
+        { type: "Indoor Seed Start", start: [2,22], end: [3,22] },
+        { type: "Direct Sow",        start: [3,22], end: [4,22] },
+        { type: "Transplant",        start: [4,22], end: [5,7]  },
+        { type: "Harvest",           start: [6,15], end: [10,1], label: "Cut flowers" },
+        { type: "Deadhead",          start: [6,15], end: [10,1] },
+      ]},
+      { name: "Cosmos Sensation Mix", category: "Flowers", location: "front", notes: "Ed Hume", tasks: [
+        { type: "Indoor Seed Start", start: [2,22], end: [3,22] },
+        { type: "Direct Sow",        start: [3,22], end: [4,22] },
+        { type: "Transplant",        start: [4,22], end: [5,7]  },
+        { type: "Harvest",           start: [6,15], end: [10,1], label: "Cut flowers" },
+        { type: "Deadhead",          start: [6,15], end: [10,1] },
+      ]},
+      { name: "Painted Daisy Merry Mix", category: "Flowers", location: "front", notes: "Ed Hume · Pyrethrum", tasks: [
+        { type: "Indoor Seed Start", start: [1,22], end: [3,1]  },
+        { type: "Transplant",        start: [3,22], end: [4,15] },
+        { type: "Direct Sow",        start: [3,22], end: [4,22] },
+        { type: "Harvest",           start: [5,22], end: [7,31], label: "Cut flowers" },
+        { type: "Deadhead",          start: [5,22], end: [8,15] },
+      ]},
+      { name: "Viola Johnny Jump Up", category: "Flowers", location: "front", notes: "Ed Hume · Helen Mount · very cold tolerant", tasks: [
+        { type: "Indoor Seed Start", start: [0,15], end: [1,28] },
+        { type: "Direct Sow",        start: [1,15], end: [3,1]  },
+        { type: "Transplant",        start: [2,22], end: [3,22] },
+        { type: "Harvest",           start: [3,15], end: [6,30], label: "Cut / edible flowers" },
+        { type: "Deadhead",          start: [3,15], end: [6,30] },
+        { type: "Direct Sow",        start: [8,1],  end: [9,1],  label: "Direct Sow (fall)" },
+      ]},
+      { name: "Dahlia Dwarf Unwins Mix", category: "Flowers", location: "front", notes: "Ed Hume · growing from seed", tasks: [
+        { type: "Indoor Seed Start", start: [2,15], end: [3,15], label: "Start seeds indoors" },
+        { type: "Thin/Pot Up",       start: [3,15], end: [4,1],  label: "Pot up seedlings" },
+        { type: "Transplant",        start: [4,22], end: [5,7],  label: "Plant out after frost" },
+        { type: "Harvest",           start: [7,1],  end: [10,15], label: "Cut flowers" },
+        { type: "Deadhead",          start: [7,1],  end: [10,15] },
+        { type: "Prune/Trim",        start: [10,22], end: [11,8], label: "Cut back after frost" },
+      ]},
+      { name: "Gloriosa Daisy Rudbeckia", category: "Flowers", location: "front", notes: "Ed Hume · Rudbeckia hirta", tasks: [
+        { type: "Indoor Seed Start", start: [2,1],  end: [3,1]  },
+        { type: "Direct Sow",        start: [3,22], end: [4,22] },
+        { type: "Transplant",        start: [4,7],  end: [4,22] },
+        { type: "Harvest",           start: [7,1],  end: [9,30], label: "Cut flowers" },
+        { type: "Deadhead",          start: [7,1],  end: [9,30] },
+      ]},
+      { name: "Aster Bouquet Powderpuffs", category: "Flowers", location: "front", notes: "Ed Hume · 8wk start", tasks: [
+        { type: "Indoor Seed Start", start: [2,22], end: [3,22] },
+        { type: "Transplant",        start: [4,22], end: [5,15] },
+        { type: "Harvest",           start: [7,22], end: [10,1], label: "Cut flowers" },
+        { type: "Deadhead",          start: [7,22], end: [10,1] },
+      ]},
+      { name: "Alyssum Carpet of Snow", category: "Flowers", location: "front", notes: "Ed Hume · Snow Cloth · cold tolerant", tasks: [
+        { type: "Direct Sow",  start: [2,22], end: [4,15], label: "Direct Sow (cool ok)" },
+        { type: "Thin/Pot Up", start: [3,22], end: [4,22] },
+        { type: "Harvest",     start: [4,22], end: [9,30], label: "Bloom / pollinators" },
+        { type: "Deadhead",    start: [5,1],  end: [9,1]  },
+        { type: "Direct Sow",  start: [7,22], end: [8,15], label: "Direct Sow (fall)" },
+      ]},
+      { name: "Nasturtium Dwarf Jewel Mix", category: "Flowers", location: "front", notes: "Ed Hume · edible", tasks: [
+        { type: "Direct Sow", start: [3,7],  end: [5,1]  },
+        { type: "Harvest",    start: [5,15], end: [10,1], label: "Cut / edible flowers" },
+      ]},
+      { name: "Nasturtium Alaska Variegated", category: "Flowers", location: "front", notes: "Ed Hume · variegated foliage · edible", tasks: [
+        { type: "Direct Sow", start: [3,7],  end: [5,1]  },
+        { type: "Harvest",    start: [5,15], end: [10,1], label: "Cut / edible flowers" },
+      ]},
+      { name: "Snapdragon Dwarf Magic Carpet", category: "Flowers", location: "front", notes: "Ed Hume · 10-12wk start", tasks: [
+        { type: "Indoor Seed Start", start: [0,15], end: [2,1]  },
+        { type: "Thin/Pot Up",       start: [1,22], end: [2,22] },
+        { type: "Transplant",        start: [3,22], end: [4,22] },
+        { type: "Harvest",           start: [5,1],  end: [8,31], label: "Cut flowers" },
+        { type: "Deadhead",          start: [5,1],  end: [8,31] },
+      ]},
+      { name: "Sunflower Tall Mix", category: "Flowers", location: "front", notes: "Ed Hume", tasks: [
+        { type: "Indoor Seed Start", start: [3,1],  end: [3,22] },
+        { type: "Direct Sow",        start: [4,7],  end: [5,7]  },
+        { type: "Transplant",        start: [4,22], end: [5,7]  },
+        { type: "Harvest",           start: [7,22], end: [9,15], label: "Cut flowers / seeds" },
+      ]},
+      { name: "Zinnia Thumbelina Dwarf", category: "Flowers", location: "front", notes: "Ed Hume · needs warm soil", tasks: [
+        { type: "Indoor Seed Start", start: [3,22], end: [4,15] },
+        { type: "Direct Sow",        start: [4,22], end: [5,15], label: "Direct Sow (warm soil)" },
+        { type: "Transplant",        start: [4,22], end: [5,15] },
+        { type: "Harvest",           start: [6,22], end: [10,1], label: "Cut flowers" },
+        { type: "Deadhead",          start: [6,22], end: [10,1] },
+      ]},
+      { name: "Columbine Ed Hume Mix", category: "Flowers", location: "front", notes: "Ed Hume · needs cold stratification or early start", tasks: [
+        { type: "Indoor Seed Start", start: [0,15], end: [2,1],  label: "Start indoors (cold stratify)" },
+        { type: "Transplant",        start: [3,22], end: [4,22] },
+        { type: "Direct Sow",        start: [8,1],  end: [9,1],  label: "Direct Sow (fall establish)" },
+        { type: "Harvest",           start: [4,15], end: [6,30], label: "Bloom period" },
+        { type: "Deadhead",          start: [5,1],  end: [6,30] },
+      ]},
+      { name: "Gazania x5", category: "Established Plants", location: "front", notes: "Tender perennial · pot", tasks: [
+        { type: "Overwinter Care", start: [0,1],  end: [3,22], label: "Keep frost-free indoors" },
+        { type: "Repot",           start: [3,1],  end: [3,22] },
+        { type: "Transplant",      start: [3,22], end: [4,15], label: "Move outside after LF" },
+        { type: "Deadhead",        start: [5,1],  end: [10,1] },
+        { type: "Overwinter Care", start: [10,8], end: [11,30], label: "Bring in before frost" },
+      ]},
+      { name: "Fuchsia x5", category: "Established Plants", location: "back", notes: "Shade-loving · pot", tasks: [
+        { type: "Overwinter Care", start: [0,1],  end: [3,1],  label: "Keep dormant cool and dark" },
+        { type: "Prune/Trim",      start: [2,22], end: [3,15], label: "Hard prune before growth" },
+        { type: "Repot",           start: [3,1],  end: [3,22] },
+        { type: "Transplant",      start: [4,1],  end: [4,22], label: "Move outside (after back LF)" },
+        { type: "Fertilize",       start: [5,1],  end: [9,1],  label: "Weekly high-K feed" },
+        { type: "Deadhead",        start: [5,1],  end: [9,30] },
+        { type: "Overwinter Care", start: [10,1], end: [11,30], label: "Bring in before frost" },
+      ]},
+      { name: "Mint", category: "Established Plants", location: "back", notes: "Keep contained in pot!", tasks: [
+        { type: "Repot",           start: [2,22], end: [3,22], label: "Divide and repot" },
+        { type: "Harvest",         start: [4,1],  end: [10,31] },
+        { type: "Prune/Trim",      start: [8,1],  end: [9,1],  label: "Cut back before flowering" },
+        { type: "Overwinter Care", start: [10,15], end: [11,30], label: "Mulch or bring in" },
+      ]},
+      { name: "Hellebore x3", category: "Established Plants", location: "back", notes: "Shade · woodland perennial", tasks: [
+        { type: "Prune/Trim", start: [0,15], end: [1,28], label: "Remove old leaves" },
+        { type: "Fertilize",  start: [1,15], end: [2,28], label: "Top dress compost" },
+        { type: "Harvest",    start: [1,15], end: [3,31], label: "Bloom period" },
+      ]},
+      { name: "Lavender Tree", category: "Established Plants", location: "front", notes: "Established · south-facing", tasks: [
+        { type: "Prune/Trim", start: [2,22], end: [3,22], label: "Light prune (avoid old wood)" },
+        { type: "Harvest",    start: [6,1],  end: [7,22], label: "Harvest flower spikes" },
+        { type: "Prune/Trim", start: [7,22], end: [8,15], label: "Post-bloom tidy" },
+      ]},
+      { name: "Geranium Pelargonium", category: "Established Plants", location: "front", notes: "Tender pot plant", tasks: [
+        { type: "Overwinter Care", start: [0,1],  end: [3,22], label: "Keep frost-free indoors" },
+        { type: "Prune/Trim",      start: [2,22], end: [3,15], label: "Cut back leggy growth" },
+        { type: "Repot",           start: [3,1],  end: [3,22] },
+        { type: "Transplant",      start: [3,22], end: [4,22], label: "Move outside after LF" },
+        { type: "Deadhead",        start: [5,1],  end: [9,30] },
+        { type: "Overwinter Care", start: [10,8], end: [11,30], label: "Bring in before frost" },
+      ]},
+    ];
+
+    const ALL_CATEGORIES  = ["Vegetables","Brassicas","Root Vegetables","Leafy Greens","Fruits","Flowers","Established Plants","Optional"];
+    const FILT_CATEGORIES = ["All",...ALL_CATEGORIES];
+    const TASK_TYPES      = ["All",...Object.keys(TASK_COLORS)];
+    const LOCATIONS       = ["All","front (south)","back (north)"];
+
+    function taskWeeks(task) {
+      const s = monthToWeek(task.start[0], task.start[1]);
+      const e = monthToWeek(task.end[0],   task.end[1]);
+      return { start: s, end: Math.max(e, s + 1) };
+    }
+    function tKey(plantName, idx) { return `t:${plantName}:${idx}`; }
+
+    // ── Setup banner ───────────────────────────────────────────────────────────
+    function SetupBanner({ onSave }) {
+      const [key, setKey] = useState("");
+      const [error, setError] = useState("");
+      const [loading, setLoading] = useState(false);
+
+      async function handleSave() {
+        const k = key.trim();
+        if (!k.startsWith("$2a$")) {
+          setError("That doesn't look like a JSONBin master key. It should start with $2a$");
+          return;
+        }
+        setLoading(true);
+        setError("");
+        try {
+          const data = { checked: {}, promoted: {} };
+          const binId = await binCreate(k, data);
+          lsSet(LS_KEY, k);
+          lsSet(LS_BIN, binId);
+          onSave(k, binId, data);
+        } catch(e) {
+          setError("Couldn't connect to JSONBin. Check your key and try again. (" + e.message + ")");
+        }
+        setLoading(false);
+      }
+
+      return (
+        <div style={{ maxWidth:560, margin:"40px auto", background:"#fff", borderRadius:14, border:"1.5px solid #e5e7eb", padding:"28px 32px", boxShadow:"0 4px 24px rgba(0,0,0,0.08)" }}>
+          <div style={{ fontSize:28, marginBottom:8 }}>🌱</div>
+          <h2 style={{ fontSize:18, fontWeight:700, color:"#1c2b1a", marginBottom:8 }}>Set up cloud sync</h2>
+          <p style={{ fontSize:13, color:"#6b7259", marginBottom:20, lineHeight:1.6 }}>
+            To sync your progress across devices, this app uses <strong>JSONBin</strong> — a free cloud storage service.
+            You only need to do this once per device.
+          </p>
+
+          <div style={{ background:"#f8fafc", borderRadius:10, padding:"16px 18px", marginBottom:20, fontSize:12, color:"#374151", lineHeight:1.8 }}>
+            <strong>Quick setup (2 minutes):</strong><br/>
+            1. Go to <a href="https://jsonbin.io" target="_blank" style={{ color:"#7c3aed" }}>jsonbin.io</a> and create a free account<br/>
+            2. Click your avatar → <strong>API Keys</strong><br/>
+            3. Copy your <strong>Master Key</strong> (starts with <code style={{ background:"#e5e7eb", padding:"1px 4px", borderRadius:3 }}>$2a$</code>)<br/>
+            4. Paste it below and click Save
+          </div>
+
+          <div style={{ marginBottom:12 }}>
+            <label style={{ fontSize:12, fontWeight:600, color:"#374151", display:"block", marginBottom:6 }}>
+              JSONBin Master Key
+            </label>
+            <input
+              value={key}
+              onChange={e => setKey(e.target.value)}
+              placeholder="$2a$10$..."
+              style={{ width:"100%", padding:"10px 12px", borderRadius:8, border:"1.5px solid #d1d5db", fontSize:12, fontFamily:"monospace", outline:"none", background:"#fff" }}
+            />
+          </div>
+
+          {error && <div style={{ fontSize:12, color:"#dc2626", marginBottom:12 }}>{error}</div>}
+
+          <button onClick={handleSave} disabled={loading || !key.trim()}
+            style={{ padding:"10px 24px", borderRadius:8, border:"none", background: key.trim()?"#16a34a":"#d1d5db",
+              color:"#fff", fontSize:13, fontWeight:700, cursor: key.trim()?"pointer":"default", width:"100%" }}>
+            {loading ? "Connecting…" : "Save & start syncing"}
+          </button>
+
+          <p style={{ fontSize:11, color:"#9ca3af", marginTop:14, textAlign:"center" }}>
+            Your key is stored only in this browser's localStorage — never sent anywhere except JSONBin.
+            On your next device, open this page and enter the same key.
+          </p>
+        </div>
+      );
+    }
+
+    // ── Task Popover ───────────────────────────────────────────────────────────
+    function TaskPopover({ plant, task, isOptional, isChecked, onToggle, onClose }) {
+      const ref = useRef(null);
+      const label = task.label || task.type;
+      const color = TASK_COLORS[task.type]?.bg || "#64748b";
+
+      useEffect(() => {
+        const h = (e) => { if (ref.current && !ref.current.contains(e.target)) onClose(); };
+        setTimeout(() => document.addEventListener("mousedown", h), 0);
+        return () => document.removeEventListener("mousedown", h);
+      }, [onClose]);
+
+      return (
+        <div ref={ref} onClick={e => e.stopPropagation()} style={{
+          background:"#fff", border:"1.5px solid #e5e7eb", borderRadius:10,
+          boxShadow:"0 8px 32px rgba(0,0,0,0.2)", padding:"14px 16px 12px",
+          minWidth:220, maxWidth:270, position:"relative",
+        }}>
+          <button onClick={onClose} style={{ position:"absolute",top:8,right:10,background:"none",border:"none",cursor:"pointer",fontSize:18,color:"#9ca3af",lineHeight:1,padding:0 }}>×</button>
+          <div style={{ fontSize:10,color:"#9ca3af",marginBottom:3,fontStyle:"italic" }}>
+            {plant.location==="front"?"☀️":"🌿"} {plant.name}
+          </div>
+          <div style={{ display:"flex",alignItems:"center",gap:7,marginBottom:6 }}>
+            <div style={{ width:10,height:10,borderRadius:3,background:color,flexShrink:0 }}/>
+            <span style={{ fontSize:13,fontWeight:700,color:"#1c2b1a" }}>{label}</span>
+          </div>
+          <div style={{ fontSize:11,color:"#6b7259",marginBottom:plant.notes?8:12 }}>
+            {MONTHS[task.start[0]]} {task.start[1]} – {MONTHS[task.end[0]]} {task.end[1]}
+          </div>
+          {plant.notes && (
+            <div style={{ fontSize:10,color:"#9ca3af",marginBottom:12,borderTop:"1px solid #f3f4f6",paddingTop:8 }}>
+              {plant.notes}
+            </div>
+          )}
+          {!isOptional ? (
+            <div onClick={onToggle} style={{
+              display:"flex",alignItems:"center",gap:10,cursor:"pointer",
+              background:isChecked?"#f0fdf4":"#fafaf7",
+              border:`1.5px solid ${isChecked?"#16a34a":"#d1d5db"}`,
+              borderRadius:8,padding:"9px 12px",transition:"all 0.15s",userSelect:"none",
+            }}>
+              <div style={{ width:20,height:20,borderRadius:5,border:`2px solid ${isChecked?"#16a34a":"#d1d5db"}`,background:isChecked?"#16a34a":"#fff",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,transition:"all 0.15s" }}>
+                {isChecked && <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2 6l3 3 5-5" stroke="#fff" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+              </div>
+              <span style={{ fontSize:12,fontWeight:600,color:isChecked?"#16a34a":"#374151",textDecoration:isChecked?"line-through":"none" }}>
+                {isChecked?"Done ✓":"Mark as done"}
+              </span>
+            </div>
+          ) : (
+            <div style={{ fontSize:11,color:"#94a3b8",fontStyle:"italic" }}>Click ✚ in the plant label to commit to growing this plant first.</div>
+          )}
+        </div>
+      );
+    }
+
+    // ── Main App ───────────────────────────────────────────────────────────────
+    function GardenGantt() {
+      // Sync state
+      const [apiKey,    setApiKey]    = useState(() => lsGet(LS_KEY, null));
+      const [binId,     setBinId]     = useState(() => lsGet(LS_BIN, null));
+      const [syncReady, setSyncReady] = useState(false);
+      const [syncStatus, setSyncStatus] = useState(""); // "", "saving", "saved", "error"
+      const saveTimer = useRef(null);
+
+      // App state
+      const [checkedTasks,     setCheckedTasks]     = useState({});
+      const [promotedOptional, setPromotedOptional] = useState({});
+      const [categoryFilter,   setCategoryFilter]   = useState("All");
+      const [taskFilter,       setTaskFilter]       = useState("All");
+      const [locationFilter,   setLocationFilter]   = useState("All");
+      const [search,           setSearch]           = useState("");
+      const [showFrost,        setShowFrost]        = useState(true);
+      const [showNotes,        setShowNotes]        = useState(false);
+      const [popover,          setPopover]          = useState(null);
+
+      const now = new Date();
+      const currentWeek = Math.floor((now - new Date(now.getFullYear(),0,1)) / (7*24*60*60*1000));
+      const CELL_W  = 14;
+      const ROW_H   = 28;
+      const LABEL_W = showNotes ? 280 : 175;
+
+      // Load from cloud on mount
+      useEffect(() => {
+        if (!apiKey || !binId) return;
+        binRead(apiKey, binId).then(data => {
+          if (data?.checked)  setCheckedTasks(data.checked);
+          if (data?.promoted) setPromotedOptional(data.promoted);
+          setSyncReady(true);
+          setSyncStatus("saved");
+        }).catch(() => {
+          setSyncReady(true);
+          setSyncStatus("error");
+        });
+      }, [apiKey, binId]);
+
+      // Debounced save to cloud whenever data changes
+      const saveToCloud = useCallback((checked, promoted) => {
+        if (!apiKey || !binId) return;
+        clearTimeout(saveTimer.current);
+        setSyncStatus("saving");
+        saveTimer.current = setTimeout(async () => {
+          try {
+            await binWrite(apiKey, binId, { checked, promoted });
+            setSyncStatus("saved");
+          } catch(_) {
+            setSyncStatus("error");
+          }
+        }, 1200);
+      }, [apiKey, binId]);
+
+      const toggleTask = useCallback((key) => {
+        setCheckedTasks(prev => {
+          const n = {...prev};
+          if (n[key]) delete n[key]; else n[key] = true;
+          saveToCloud(n, promotedOptional);
+          return n;
+        });
+      }, [promotedOptional, saveToCloud]);
+
+      const promoteOptional = useCallback((plantName) => {
+        setPromotedOptional(prev => {
+          const n = {...prev, [plantName]: true};
+          saveToCloud(checkedTasks, n);
+          return n;
+        });
+      }, [checkedTasks, saveToCloud]);
+
+      const allActivePlants = useMemo(() => {
+        const promoted = OPTIONAL_PLANTS.filter(p => promotedOptional[p.name]).map(p => ({...p, category: p.targetCategory}));
+        return [...PLANTS, ...promoted];
+      }, [promotedOptional]);
+
+      const optionalPlants = useMemo(() =>
+        OPTIONAL_PLANTS.filter(p => !promotedOptional[p.name]).map(p => ({...p, category:"Optional"})),
+      [promotedOptional]);
+
+      const combinedPlants = useMemo(() => [...allActivePlants, ...optionalPlants], [allActivePlants, optionalPlants]);
+
+      const urgentPlants = useMemo(() =>
+        combinedPlants.filter(p => p.tasks.some(t => t.label?.includes("in hand"))).map(p => p.name),
+      [combinedPlants]);
+
+      const filteredPlants = useMemo(() => combinedPlants.filter(p => {
+        if (categoryFilter !== "All" && p.category !== categoryFilter) return false;
+        if (locationFilter === "front (south)" && p.location !== "front") return false;
+        if (locationFilter === "back (north)"  && p.location !== "back")  return false;
+        if (search && !p.name.toLowerCase().includes(search.toLowerCase())) return false;
+        if (taskFilter !== "All" && !p.tasks.some(t => t.type === taskFilter)) return false;
+        return true;
+      }), [combinedPlants, categoryFilter, taskFilter, locationFilter, search]);
+
+      const totalTasks = useMemo(() => allActivePlants.reduce((s,p) => s + p.tasks.length, 0), [allActivePlants]);
+      const doneTasks  = Object.keys(checkedTasks).length;
+
+      function handleSetup(key, bid, data) {
+        setApiKey(key);
+        setBinId(bid);
+        setCheckedTasks(data.checked || {});
+        setPromotedOptional(data.promoted || {});
+        setSyncReady(true);
+        setSyncStatus("saved");
+      }
+
+      // Show setup screen if no credentials yet
+      if (!apiKey || !binId) {
+        return <SetupBanner onSave={handleSetup} />;
+      }
+
+      // Show loading while fetching initial data
+      if (!syncReady) {
+        return (
+          <div style={{ display:"flex",alignItems:"center",justifyContent:"center",height:"100vh",flexDirection:"column",gap:12 }}>
+            <div style={{ fontSize:32 }}>🌱</div>
+            <div style={{ fontSize:14,color:"#6b7259" }}>Loading your garden…</div>
+          </div>
+        );
+      }
+
+      function openPopover(e, plant, taskIdx, task, isOpt) {
+        e.stopPropagation();
+        const rect = e.currentTarget.getBoundingClientRect();
+        const popH = 200;
+        const y = rect.top - 10 > popH ? rect.top - popH - 4 : rect.bottom + 6;
+        const x = Math.min(Math.max(rect.left, 8), window.innerWidth - 290);
+        setPopover({ plant, taskIndex: taskIdx, task, isOptional: isOpt, x, y });
+      }
+
+      const syncIndicator = {
+        saving: { color:"#d97706", icon:"⟳", text:"Saving…" },
+        saved:  { color:"#16a34a", icon:"✓", text:"Synced" },
+        error:  { color:"#dc2626", icon:"!", text:"Sync error" },
+      }[syncStatus] || null;
+
+      return (
+        <div style={{ fontFamily:"Georgia,serif", background:"#fafaf7", minHeight:"100vh", padding:"18px 16px" }}
+          onClick={() => setPopover(null)}>
+
+          {popover && (
+            <div style={{ position:"fixed", left:popover.x, top:popover.y, zIndex:1000 }} onClick={e => e.stopPropagation()}>
+              <TaskPopover
+                plant={popover.plant}
+                taskIndex={popover.taskIndex}
+                task={popover.task}
+                isOptional={popover.isOptional}
+                isChecked={!!checkedTasks[tKey(popover.plant.name, popover.taskIndex)]}
+                onToggle={() => toggleTask(tKey(popover.plant.name, popover.taskIndex))}
+                onClose={() => setPopover(null)}
+              />
+            </div>
+          )}
+
+          {/* Header */}
+          <div style={{ marginBottom:14, display:"flex", alignItems:"flex-start", justifyContent:"space-between", flexWrap:"wrap", gap:8 }}>
+            <div>
+              <h1 style={{ fontSize:22, fontWeight:700, color:"#1c2b1a", margin:0 }}>🌱 Garden Gantt Calendar</h1>
+              <p style={{ color:"#6b7259", fontSize:12, margin:"3px 0 0", fontStyle:"italic" }}>
+                Zone 8b · Cottage Lake, WA · 430 ft · {combinedPlants.length} plants · Ed Hume Seeds
+                &nbsp;·&nbsp;<span style={{ color:"#16a34a",fontWeight:600 }}>☀ Front yard</span> last frost Mar 22
+                &nbsp;·&nbsp;<span style={{ color:"#0891b2",fontWeight:600 }}>🌿 Back deck</span> last frost Apr 1
+                {syncIndicator && (
+                  <span style={{ marginLeft:10, color:syncIndicator.color, fontStyle:"normal", fontWeight:600 }}>
+                    {syncIndicator.icon} {syncIndicator.text}
+                  </span>
+                )}
+              </p>
+            </div>
+            <div style={{
+              background:doneTasks>0?"#f0fdf4":"#f8fafc",
+              border:`1.5px solid ${doneTasks>0?"#16a34a":"#e5e7eb"}`,
+              borderRadius:20, padding:"6px 14px",
+              display:"flex", alignItems:"center", gap:8, flexShrink:0,
+            }}>
+              <span style={{ fontSize:11, color:doneTasks>0?"#16a34a":"#94a3b8", fontWeight:700 }}>
+                ✓ {doneTasks} / {totalTasks} tasks done
+              </span>
+              <div style={{ width:80,height:6,borderRadius:3,background:"#e5e7eb",overflow:"hidden" }}>
+                <div style={{ height:"100%",borderRadius:3,background:"#16a34a",width:`${totalTasks?(doneTasks/totalTasks)*100:0}%`,transition:"width 0.3s ease" }}/>
+              </div>
+              {doneTasks > 0 && (
+                <button onClick={e => { e.stopPropagation(); const n = {}; setCheckedTasks(n); saveToCloud(n, promotedOptional); }}
+                  style={{ fontSize:10,color:"#dc2626",background:"none",border:"none",cursor:"pointer",padding:0,textDecoration:"underline" }}>
+                  reset
+                </button>
+              )}
+            </div>
+          </div>
+
+          {urgentPlants.length > 0 && (
+            <div style={{ background:"#fef9c3",border:"1px solid #fde047",borderRadius:8,padding:"8px 14px",marginBottom:12,fontSize:12,color:"#713f12" }}>
+              <strong>⚠️ Pot up now!</strong> These starts are in hand:&nbsp;{urgentPlants.join(" · ")}
+            </div>
+          )}
+
+          {/* Legend */}
+          <div style={{ display:"flex",flexWrap:"wrap",gap:5,marginBottom:10 }}>
+            {Object.entries(TASK_COLORS).map(([type,c]) => (
+              <div key={type} style={{ display:"flex",alignItems:"center",gap:4,fontSize:10,background:"#fff",border:"1px solid #e5e7eb",borderRadius:20,padding:"2px 8px" }}>
+                <div style={{ width:8,height:8,borderRadius:2,background:c.bg }}/>
+                <span style={{ color:"#374151" }}>{type}</span>
+              </div>
+            ))}
+          </div>
+
+          {/* Filters */}
+          <div style={{ display:"flex",flexWrap:"wrap",gap:6,marginBottom:12,alignItems:"center" }}>
+            <input placeholder="🔍 Search..." value={search} onChange={e => setSearch(e.target.value)}
+              style={{ padding:"5px 10px",borderRadius:8,border:"1px solid #d1d5db",fontSize:12,width:140,outline:"none",background:"#fff" }}/>
+            <div style={{ display:"flex",gap:3,flexWrap:"wrap" }}>
+              {FILT_CATEGORIES.map(c => (
+                <button key={c} onClick={() => setCategoryFilter(c)}
+                  style={{ padding:"4px 10px",borderRadius:20,border:"1px solid",fontSize:11,cursor:"pointer",
+                    borderColor:categoryFilter===c?(CATEGORY_COLORS[c]||"#64748b"):"#d1d5db",
+                    background:categoryFilter===c?(CAT_BG[c]||"#f1f5f9"):"#fff",
+                    color:"#1c2b1a",fontWeight:categoryFilter===c?700:400 }}>
+                  {c==="Optional"?"🤔 Optional":c}
+                </button>
+              ))}
+            </div>
+            <select value={taskFilter} onChange={e => setTaskFilter(e.target.value)}
+              style={{ padding:"5px 8px",borderRadius:8,border:"1px solid #d1d5db",fontSize:11,background:"#fff",color:"#374151" }}>
+              {TASK_TYPES.map(t => <option key={t}>{t}</option>)}
+            </select>
+            <select value={locationFilter} onChange={e => setLocationFilter(e.target.value)}
+              style={{ padding:"5px 8px",borderRadius:8,border:"1px solid #d1d5db",fontSize:11,background:"#fff",color:"#374151" }}>
+              {LOCATIONS.map(l => <option key={l}>{l}</option>)}
+            </select>
+            <button onClick={() => setShowFrost(f => !f)}
+              style={{ padding:"4px 10px",borderRadius:20,border:"1px solid",fontSize:11,cursor:"pointer",
+                borderColor:showFrost?"#16a34a":"#d1d5db",background:showFrost?"#dcfce7":"#fff",
+                color:showFrost?"#14532d":"#374151",fontWeight:showFrost?700:400 }}>
+              🌡 Frost dates
+            </button>
+            <button onClick={() => setShowNotes(n => !n)}
+              style={{ padding:"4px 10px",borderRadius:20,border:"1px solid",fontSize:11,cursor:"pointer",
+                borderColor:showNotes?"#7c3aed":"#d1d5db",background:showNotes?"#ede9fe":"#fff",
+                color:showNotes?"#4c1d95":"#374151",fontWeight:showNotes?700:400 }}>
+              📋 Variety notes
+            </button>
+            <span style={{ fontSize:11,color:"#9ca3af" }}>{filteredPlants.length} plants shown</span>
+          </div>
+
+          {/* Grid */}
+          <div style={{ background:"#fff",borderRadius:12,border:"1px solid #e5e7eb",overflow:"auto",boxShadow:"0 1px 6px rgba(0,0,0,0.07)" }}>
+            <div style={{ display:"flex", minWidth: LABEL_W + TOTAL_WEEKS*CELL_W + 20 }}>
+
+              {/* Label column */}
+              <div style={{ width:LABEL_W,flexShrink:0,borderRight:"1px solid #e5e7eb" }}>
+                <div style={{ height:40 }}/>
+                {ALL_CATEGORIES.map(cat => {
+                  const plants = filteredPlants.filter(p => p.category === cat);
+                  if (!plants.length) return null;
+                  const isOptCat = cat === "Optional";
+                  return (
+                    <div key={cat}>
+                      <div style={{ height:22,background:CAT_BG[cat]||"#f1f5f9",display:"flex",alignItems:"center",
+                        paddingLeft:10,fontSize:10,fontWeight:800,color:"#374151",
+                        letterSpacing:"0.06em",textTransform:"uppercase",borderTop:"1px solid #e5e7eb",
+                        borderLeft:"3px solid "+(CATEGORY_COLORS[cat]||"#94a3b8") }}>
+                        {isOptCat?"🤔 Optional — click ✚ to plant this year":cat}
+                      </div>
+                      {plants.map(plant => {
+                        const optDef    = OPTIONAL_PLANTS.find(o => o.name === plant.name);
+                        const isOpt     = isOptCat && !!optDef;
+                        const plantDone = plant.tasks.filter((_,ti) => checkedTasks[tKey(plant.name,ti)]).length;
+                        const allDone   = !isOpt && plantDone === plant.tasks.length;
+                        return (
+                          <div key={plant.name} style={{ height:ROW_H,display:"flex",alignItems:"center",
+                            paddingLeft:10,borderBottom:"1px solid #f3f4f6",
+                            background:allDone?"#f0fdf4":urgentPlants.includes(plant.name)?"#fefce8":isOpt?"#f8fafc":"transparent" }}>
+                            {isOpt && (
+                              <button title={`Plant this year → ${optDef.targetCategory}`}
+                                onClick={e => { e.stopPropagation(); promoteOptional(plant.name); }}
+                                style={{ flexShrink:0,marginRight:5,width:18,height:18,borderRadius:"50%",border:"1.5px solid #16a34a",background:"#f0fdf4",color:"#16a34a",fontSize:13,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",fontWeight:900,padding:0 }}>
+                                ✚
+                              </button>
+                            )}
+                            <span style={{ fontSize:9,opacity:isOpt?0.5:0.6,marginRight:4,flexShrink:0 }}>
+                              {plant.location==="front"?"☀️":"🌿"}
+                            </span>
+                            <div style={{ overflow:"hidden",flex:1 }}>
+                              <div style={{ fontSize:11,fontWeight:600,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",
+                                color:allDone?"#16a34a":isOpt?"#94a3b8":"#1c2b1a",
+                                fontStyle:isOpt?"italic":"normal",textDecoration:allDone?"line-through":"none" }}>
+                                {plant.name}{urgentPlants.includes(plant.name)?" ⚠️":""}{allDone?" ✓":""}
+                              </div>
+                              {isOpt && <div style={{ fontSize:9,color:"#cbd5e1" }}>→ {optDef.targetCategory} if planted</div>}
+                              {!isOpt && plantDone>0 && !allDone && <div style={{ fontSize:9,color:"#16a34a" }}>{plantDone}/{plant.tasks.length} done</div>}
+                              {!isOpt && showNotes && plant.notes && <div style={{ fontSize:9,color:"#9ca3af",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",lineHeight:1.2 }}>{plant.notes}</div>}
+                              {isOpt  && showNotes && plant.notes && <div style={{ fontSize:9,color:"#cbd5e1",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",lineHeight:1.2 }}>{plant.notes}</div>}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Gantt column */}
+              <div style={{ flex:1,overflowX:"auto",position:"relative" }}>
+                <div style={{ display:"flex",height:40,alignItems:"flex-end",borderBottom:"2px solid #e5e7eb",position:"sticky",top:0,background:"#fff",zIndex:10 }}>
+                  {MONTHS.map((m,i) => (
+                    <div key={m} style={{ width:WPM[i]*CELL_W,flexShrink:0,borderLeft:"1px solid #e5e7eb",paddingLeft:4,paddingBottom:6 }}>
+                      <span style={{ fontSize:11,fontWeight:700,color:"#374151" }}>{m}</span>
+                    </div>
+                  ))}
+                </div>
+
+                {showFrost && <>
+                  <div style={{ position:"absolute",top:0,bottom:0,left:0,width:FRONT_LF*CELL_W,background:"rgba(22,163,74,0.05)",pointerEvents:"none",zIndex:0 }}/>
+                  <div style={{ position:"absolute",top:0,bottom:0,left:FRONT_FF*CELL_W,right:0,background:"rgba(22,163,74,0.05)",pointerEvents:"none",zIndex:0 }}/>
+                  {[
+                    {x:FRONT_LF,color:"#16a34a",label:"LF Mar 22 ☀",top:2},
+                    {x:FRONT_FF,color:"#16a34a",label:"FF Nov 8 ☀", top:2},
+                    {x:BACK_LF, color:"#0891b2",label:"LF Apr 1 🌿",top:14},
+                    {x:BACK_FF, color:"#0891b2",label:"FF Nov 1 🌿",top:14},
+                  ].map(({x,color,label,top}) => (
+                    <div key={label} style={{ position:"absolute",top:0,bottom:0,left:x*CELL_W,width:1,background:color,opacity:0.35,pointerEvents:"none",zIndex:1 }}>
+                      <div style={{ position:"absolute",top,left:2,background:color,color:"#fff",fontSize:8,fontWeight:700,borderRadius:3,padding:"1px 3px",whiteSpace:"nowrap",opacity:0.9 }}>{label}</div>
+                    </div>
+                  ))}
+                </>}
+
+                {ALL_CATEGORIES.map(cat => {
+                  const plants = filteredPlants.filter(p => p.category === cat);
+                  if (!plants.length) return null;
+                  const isOptCat = cat === "Optional";
+                  return (
+                    <div key={cat}>
+                      <div style={{ height:22,background:CAT_BG[cat]||"#f1f5f9",borderTop:"1px solid #e5e7eb",display:"flex" }}>
+                        {MONTHS.map((m,i) => <div key={m} style={{ width:WPM[i]*CELL_W,flexShrink:0,borderLeft:"1px solid #e5e7eb" }}/>)}
+                      </div>
+                      {plants.map(plant => {
+                        const tasksToShow = taskFilter==="All" ? plant.tasks : plant.tasks.filter(t => t.type===taskFilter);
+                        return (
+                          <div key={plant.name} style={{ height:ROW_H,position:"relative",borderBottom:"1px solid #f3f4f6",display:"flex",alignItems:"center",
+                            background:urgentPlants.includes(plant.name)?"#fefce8":isOptCat?"#f8fafc":"transparent" }}>
+                            {MONTHS.map((m,i) => <div key={m} style={{ width:WPM[i]*CELL_W,flexShrink:0,height:"100%",borderLeft:"1px solid #f3f4f6",boxSizing:"border-box" }}/>)}
+                            {tasksToShow.map((task,ti) => {
+                              const origIdx  = plant.tasks.indexOf(task);
+                              const key      = tKey(plant.name, origIdx);
+                              const isDone   = !!checkedTasks[key];
+                              const {start,end} = taskWeeks(task);
+                              const color    = TASK_COLORS[task.type] || TASK_COLORS["Harvest"];
+                              const label    = task.label || task.type;
+                              const isActive = popover?.plant.name===plant.name && popover?.taskIndex===origIdx;
+                              const w        = (end-start)*CELL_W - 2;
+                              return (
+                                <div key={ti}
+                                  onClick={e => openPopover(e, plant, origIdx, task, isOptCat)}
+                                  title={`${plant.name} · ${label} · ${MONTHS[task.start[0]]} ${task.start[1]}–${MONTHS[task.end[0]]} ${task.end[1]}${isDone?" · ✓ Done":""}`}
+                                  style={{
+                                    position:"absolute",left:start*CELL_W,width:w,height:18,top:(ROW_H-18)/2,
+                                    background:color.bg,borderRadius:4,
+                                    opacity:isOptCat?(isActive?0.55:0.35):isDone?0.42:(isActive?1:0.87),
+                                    cursor:"pointer",transition:"opacity 0.12s, transform 0.1s",
+                                    transform:isActive?"scaleY(1.18)":"none",
+                                    display:"flex",alignItems:"center",paddingLeft:4,overflow:"hidden",
+                                    zIndex:isActive?5:1,
+                                    boxShadow:isActive?"0 2px 10px rgba(0,0,0,0.22)":"none",
+                                  }}>
+                                  {isDone && (
+                                    <svg style={{ position:"absolute",inset:0,width:"100%",height:"100%",pointerEvents:"none" }} preserveAspectRatio="none">
+                                      <line x1="2" y1="90%" x2="98%" y2="10%" stroke="rgba(255,255,255,0.65)" strokeWidth="1.5"/>
+                                    </svg>
+                                  )}
+                                  {isDone && w>=20 && (
+                                    <div style={{ position:"absolute",right:3,top:"50%",transform:"translateY(-50%)",width:13,height:13,borderRadius:"50%",background:"rgba(255,255,255,0.9)",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0 }}>
+                                      <svg width="9" height="9" viewBox="0 0 9 9" fill="none"><path d="M1.5 4.5l2.2 2.2 3.8-4" stroke="#16a34a" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                                    </div>
+                                  )}
+                                  <span style={{ fontSize:9,color:"#fff",fontWeight:700,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",lineHeight:1,opacity:isDone?0.65:1 }}>
+                                    {(end-start)>=4?label:""}
+                                  </span>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })}
+
+                <div style={{ position:"absolute",top:0,bottom:0,left:currentWeek*CELL_W,width:2,background:"#ef4444",opacity:0.85,pointerEvents:"none",zIndex:20 }}>
+                  <div style={{ position:"absolute",top:2,left:-18,background:"#ef4444",color:"#fff",fontSize:9,fontWeight:700,borderRadius:3,padding:"1px 4px",whiteSpace:"nowrap" }}>TODAY</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <p style={{ fontSize:10,color:"#9ca3af",marginTop:8,textAlign:"center" }}>
+            ☀️ Front yard · 🌿 Back deck · <strong>Click any bar</strong> to check it off · Red line = today · ☁ Synced via JSONBin
+            <br/>Ed Hume Seeds · Frost: Front Mar 22/Nov 8 · Back Apr 1/Nov 1 · Cottage Lake WA 430ft
+            <br/>🤔 Optional: click ✚ to commit · <button onClick={() => { lsSet(LS_KEY,null); lsSet(LS_BIN,null); location.reload(); }} style={{ fontSize:10,color:"#9ca3af",background:"none",border:"none",cursor:"pointer",textDecoration:"underline",padding:0 }}>reset sync settings</button>
+          </p>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<GardenGantt/>);
+  </script>
+</body>
+</html>
