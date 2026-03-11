@@ -415,6 +415,23 @@
     }
     function tKey(plantName, idx) { return `t:${plantName}:${idx}`; }
 
+    // ── Date math helpers ──────────────────────────────────────────────────────
+    function monthDayToWeek(m, d) { return monthToWeek(m, d); }
+
+    function weekToMonthDay(week) {
+      let w = 0;
+      for (let i = 0; i < 12; i++) {
+        if (w + WPM[i] > week) {
+          const day = Math.max(1, Math.round(((week - w) / WPM[i]) * 30));
+          return [i, Math.min(day, 28)];
+        }
+        w += WPM[i];
+      }
+      return [11, 28];
+    }
+
+    const NO_CASCADE = new Set(["Overwinter Care","Prune/Trim","Fertilize","Harvest"]);
+
     // ── Setup / Sync Settings ─────────────────────────────────────────────────
     function SetupBanner({ onSave }) {
       const [key,   setKey]   = useState("");
@@ -550,10 +567,18 @@
     }
 
     // ── Task Popover ───────────────────────────────────────────────────────────
-    function TaskPopover({ plant, task, isOptional, isChecked, onToggle, onClose }) {
+    function TaskPopover({ plant, task, taskKey, isOptional, isChecked, doneOnDate, override, onToggle, onUpdateDates, onClose }) {
       const ref = useRef(null);
       const label = task.label || task.type;
       const color = TASK_COLORS[task.type]?.bg || "#64748b";
+      const effectiveStart = override?.start || task.start;
+      const effectiveEnd   = override?.end   || task.end;
+
+      const [editing, setEditing] = useState(false);
+      const [sm, setSm] = useState(effectiveStart[0]);
+      const [sd, setSd] = useState(effectiveStart[1]);
+      const [em, setEm] = useState(effectiveEnd[0]);
+      const [ed, setEd] = useState(effectiveEnd[1]);
 
       useEffect(() => {
         const h = (e) => { if (ref.current && !ref.current.contains(e.target)) onClose(); };
@@ -561,11 +586,18 @@
         return () => document.removeEventListener("mousedown", h);
       }, [onClose]);
 
+      function saveDate() {
+        onUpdateDates([sm, sd], [em, ed]);
+        setEditing(false);
+      }
+
+      const isRescheduled = !!(override?.start || override?.end);
+
       return (
         <div ref={ref} onClick={e => e.stopPropagation()} style={{
           background:"#fff", border:"1.5px solid #e5e7eb", borderRadius:10,
           boxShadow:"0 8px 32px rgba(0,0,0,0.2)", padding:"14px 16px 12px",
-          minWidth:220, maxWidth:270, position:"relative",
+          minWidth:240, maxWidth:290, position:"relative",
         }}>
           <button onClick={onClose} style={{ position:"absolute",top:8,right:10,background:"none",border:"none",cursor:"pointer",fontSize:18,color:"#9ca3af",lineHeight:1,padding:0 }}>×</button>
           <div style={{ fontSize:10,color:"#9ca3af",marginBottom:3,fontStyle:"italic" }}>
@@ -575,14 +607,56 @@
             <div style={{ width:10,height:10,borderRadius:3,background:color,flexShrink:0 }}/>
             <span style={{ fontSize:13,fontWeight:700,color:"#1c2b1a" }}>{label}</span>
           </div>
-          <div style={{ fontSize:11,color:"#6b7259",marginBottom:plant.notes?8:12 }}>
-            {MONTHS[task.start[0]]} {task.start[1]} – {MONTHS[task.end[0]]} {task.end[1]}
-          </div>
+
+          {/* Date display / editor */}
+          {!editing ? (
+            <div style={{ display:"flex",alignItems:"center",gap:6,marginBottom:plant.notes?8:10 }}>
+              <span style={{ fontSize:11,color:isRescheduled?"#d97706":"#6b7259" }}>
+                {isRescheduled?"📅 ":""}
+                {MONTHS[effectiveStart[0]]} {effectiveStart[1]} – {MONTHS[effectiveEnd[0]]} {effectiveEnd[1]}
+                {isRescheduled && <span style={{ fontSize:9,color:"#9ca3af",marginLeft:4 }}>(rescheduled)</span>}
+              </span>
+              {!isOptional && (
+                <button onClick={() => setEditing(true)} style={{ fontSize:10,color:"#7c3aed",background:"none",border:"none",cursor:"pointer",padding:0,textDecoration:"underline",flexShrink:0 }}>edit</button>
+              )}
+            </div>
+          ) : (
+            <div style={{ marginBottom:10,background:"#f8fafc",borderRadius:8,padding:"10px 10px 8px",border:"1px solid #e5e7eb" }}>
+              <div style={{ fontSize:10,fontWeight:600,color:"#374151",marginBottom:6 }}>Reschedule</div>
+              <div style={{ display:"flex",gap:6,alignItems:"center",marginBottom:6,flexWrap:"wrap" }}>
+                <span style={{ fontSize:10,color:"#6b7259",minWidth:28 }}>Start</span>
+                <select value={sm} onChange={e=>setSm(+e.target.value)} style={{ fontSize:11,padding:"3px 4px",borderRadius:5,border:"1px solid #d1d5db",background:"#fff" }}>
+                  {MONTHS.map((m,i)=><option key={i} value={i}>{m}</option>)}
+                </select>
+                <input type="number" value={sd} onChange={e=>setSd(+e.target.value)} min={1} max={31}
+                  style={{ width:40,fontSize:11,padding:"3px 4px",borderRadius:5,border:"1px solid #d1d5db",textAlign:"center" }}/>
+              </div>
+              <div style={{ display:"flex",gap:6,alignItems:"center",marginBottom:8,flexWrap:"wrap" }}>
+                <span style={{ fontSize:10,color:"#6b7259",minWidth:28 }}>End</span>
+                <select value={em} onChange={e=>setEm(+e.target.value)} style={{ fontSize:11,padding:"3px 4px",borderRadius:5,border:"1px solid #d1d5db",background:"#fff" }}>
+                  {MONTHS.map((m,i)=><option key={i} value={i}>{m}</option>)}
+                </select>
+                <input type="number" value={ed} onChange={e=>setEd(+e.target.value)} min={1} max={31}
+                  style={{ width:40,fontSize:11,padding:"3px 4px",borderRadius:5,border:"1px solid #d1d5db",textAlign:"center" }}/>
+              </div>
+              <div style={{ display:"flex",gap:6 }}>
+                <button onClick={saveDate} style={{ flex:1,padding:"5px",borderRadius:6,border:"none",background:"#16a34a",color:"#fff",fontSize:11,fontWeight:700,cursor:"pointer" }}>Save</button>
+                <button onClick={()=>setEditing(false)} style={{ flex:1,padding:"5px",borderRadius:6,border:"1px solid #e5e7eb",background:"#fff",color:"#374151",fontSize:11,cursor:"pointer" }}>Cancel</button>
+                {isRescheduled && <button onClick={()=>{onUpdateDates(null,null);setEditing(false);}} style={{ flex:1,padding:"5px",borderRadius:6,border:"1px solid #fecaca",background:"#fff",color:"#dc2626",fontSize:11,cursor:"pointer" }}>Reset</button>}
+              </div>
+            </div>
+          )}
+
           {plant.notes && (
-            <div style={{ fontSize:10,color:"#9ca3af",marginBottom:12,borderTop:"1px solid #f3f4f6",paddingTop:8 }}>
+            <div style={{ fontSize:10,color:"#9ca3af",marginBottom:10,borderTop:"1px solid #f3f4f6",paddingTop:8 }}>
               {plant.notes}
             </div>
           )}
+
+          {doneOnDate && (
+            <div style={{ fontSize:10,color:"#16a34a",marginBottom:8 }}>✓ Completed {doneOnDate}</div>
+          )}
+
           {!isOptional ? (
             <div onClick={onToggle} style={{
               display:"flex",alignItems:"center",gap:10,cursor:"pointer",
@@ -624,6 +698,10 @@
       const [showNotes,        setShowNotes]        = useState(false);
       const [popover,          setPopover]          = useState(null);
       const [showSyncSettings, setShowSyncSettings] = useState(false);
+      const [taskOverrides,    setTaskOverrides]    = useState({}); // key -> {start:[m,d], end:[m,d]}
+      const [doneOn,           setDoneOn]           = useState({}); // key -> "Mar 10" 
+      const [cascadeToast,     setCascadeToast]     = useState(null); // {msg, prev} for undo
+      const cascadeToastTimer  = useRef(null);
 
       const now = new Date();
       const currentWeek = Math.floor((now - new Date(now.getFullYear(),0,1)) / (7*24*60*60*1000));
@@ -635,8 +713,10 @@
       useEffect(() => {
         if (!apiKey || !binId) return;
         binRead(apiKey, binId).then(data => {
-          if (data?.checked)  setCheckedTasks(data.checked);
-          if (data?.promoted) setPromotedOptional(data.promoted);
+          if (data?.checked)   setCheckedTasks(data.checked);
+          if (data?.promoted)  setPromotedOptional(data.promoted);
+          if (data?.overrides) setTaskOverrides(data.overrides);
+          if (data?.doneOn)    setDoneOn(data.doneOn);
           setSyncReady(true);
           setSyncStatus("saved");
         }).catch(() => {
@@ -646,13 +726,13 @@
       }, [apiKey, binId]);
 
       // Debounced save to cloud whenever data changes
-      const saveToCloud = useCallback((checked, promoted) => {
+      const saveToCloud = useCallback((checked, promoted, overrides, doneOn) => {
         if (!apiKey || !binId) return;
         clearTimeout(saveTimer.current);
         setSyncStatus("saving");
         saveTimer.current = setTimeout(async () => {
           try {
-            await binWrite(apiKey, binId, { checked, promoted });
+            await binWrite(apiKey, binId, { checked, promoted, overrides, doneOn });
             setSyncStatus("saved");
           } catch(_) {
             setSyncStatus("error");
@@ -660,22 +740,91 @@
         }, 1200);
       }, [apiKey, binId]);
 
-      const toggleTask = useCallback((key) => {
+      const toggleTask = useCallback((key, plant, taskIdx) => {
+        const today = new Date();
+        const dateStr = MONTHS[today.getMonth()] + " " + today.getDate();
+        const todayWeek = Math.floor((today - new Date(today.getFullYear(),0,1)) / (7*24*60*60*1000));
+
         setCheckedTasks(prev => {
-          const n = {...prev};
-          if (n[key]) delete n[key]; else n[key] = true;
-          saveToCloud(n, promotedOptional);
-          return n;
+          const newChecked = {...prev};
+          if (newChecked[key]) {
+            // Unchecking — just remove
+            delete newChecked[key];
+            setDoneOn(d => { const nd={...d}; delete nd[key]; saveToCloud(newChecked, promotedOptional, taskOverrides, nd); return nd; });
+            return newChecked;
+          }
+
+          // Checking — record completion date
+          newChecked[key] = true;
+          const newDoneOn = {...doneOn, [key]: dateStr};
+
+          // Cascade logic — only if plant and taskIdx provided
+          let newOverrides = {...taskOverrides};
+          let cascadeCount = 0;
+          let prevOverrides = {...taskOverrides};
+
+          if (plant && taskIdx !== undefined) {
+            const task = plant.tasks[taskIdx];
+            if (task && !NO_CASCADE.has(task.type)) {
+              // Get effective end of this task
+              const ov = taskOverrides[key];
+              const effEnd = ov ? monthDayToWeek(ov.end[0], ov.end[1]) : monthDayToWeek(task.end[0], task.end[1]);
+              const schedEnd = monthDayToWeek(task.end[0], task.end[1]);
+              // How late is completion? Use today vs scheduled end
+              const delayWeeks = Math.max(0, todayWeek - schedEnd);
+
+              if (delayWeeks > 0) {
+                // Cascade all subsequent tasks for this plant that are not NO_CASCADE
+                for (let i = taskIdx + 1; i < plant.tasks.length; i++) {
+                  const nextTask = plant.tasks[i];
+                  if (NO_CASCADE.has(nextTask.type)) continue;
+                  const nextKey = tKey(plant.name, i);
+                  if (newChecked[nextKey]) continue; // already done, skip
+                  const existOv = newOverrides[nextKey];
+                  const baseStart = existOv ? existOv.start : nextTask.start;
+                  const baseEnd   = existOv ? existOv.end   : nextTask.end;
+                  const startWeek = monthDayToWeek(baseStart[0], baseStart[1]);
+                  const endWeek   = monthDayToWeek(baseEnd[0],   baseEnd[1]);
+                  const newStartWeek = Math.min(startWeek + delayWeeks, 51);
+                  const newEndWeek   = Math.min(endWeek   + delayWeeks, 52);
+                  newOverrides[nextKey] = {
+                    start: weekToMonthDay(newStartWeek),
+                    end:   weekToMonthDay(newEndWeek),
+                  };
+                  cascadeCount++;
+                }
+              }
+            }
+          }
+
+          setTaskOverrides(newOverrides);
+          setDoneOn(_ => { saveToCloud(newChecked, promotedOptional, newOverrides, newDoneOn); return newDoneOn; });
+
+          if (cascadeCount > 0) {
+            clearTimeout(cascadeToastTimer.current);
+            setCascadeToast({ msg: `${cascadeCount} following task${cascadeCount>1?"s":""} shifted by ${Math.round((todayWeek - monthDayToWeek(plant.tasks[taskIdx].end[0], plant.tasks[taskIdx].end[1]))*7)} days`, prevOverrides });
+            cascadeToastTimer.current = setTimeout(() => setCascadeToast(null), 6000);
+          }
+
+          return newChecked;
         });
-      }, [promotedOptional, saveToCloud]);
+      }, [promotedOptional, saveToCloud, taskOverrides, doneOn, cascadeToastTimer]);
 
       const promoteOptional = useCallback((plantName) => {
         setPromotedOptional(prev => {
           const n = {...prev, [plantName]: true};
-          saveToCloud(checkedTasks, n);
+          saveToCloud(checkedTasks, n, taskOverrides, doneOn);
           return n;
         });
-      }, [checkedTasks, saveToCloud]);
+      }, [checkedTasks, saveToCloud, taskOverrides, doneOn]);
+
+      const updateOverride = useCallback((key, start, end) => {
+        setTaskOverrides(prev => {
+          const n = {...prev, [key]: {start, end}};
+          saveToCloud(checkedTasks, promotedOptional, n, doneOn);
+          return n;
+        });
+      }, [checkedTasks, promotedOptional, saveToCloud, doneOn]);
 
       const allActivePlants = useMemo(() => {
         const promoted = OPTIONAL_PLANTS.filter(p => promotedOptional[p.name]).map(p => ({...p, category: p.targetCategory}));
@@ -709,6 +858,8 @@
         setBinId(bid);
         setCheckedTasks(data.checked || {});
         setPromotedOptional(data.promoted || {});
+        setTaskOverrides(data.overrides || {});
+        setDoneOn(data.doneOn || {});
         setSyncReady(true);
         setSyncStatus("saved");
       }
@@ -731,9 +882,9 @@
       function openPopover(e, plant, taskIdx, task, isOpt) {
         e.stopPropagation();
         const rect = e.currentTarget.getBoundingClientRect();
-        const popH = 200;
+        const popH = 260;
         const y = rect.top - 10 > popH ? rect.top - popH - 4 : rect.bottom + 6;
-        const x = Math.min(Math.max(rect.left, 8), window.innerWidth - 290);
+        const x = Math.min(Math.max(rect.left, 8), window.innerWidth - 300);
         setPopover({ plant, taskIndex: taskIdx, task, isOptional: isOpt, x, y });
       }
 
@@ -746,6 +897,23 @@
       return (
         <div style={{ fontFamily:"Georgia,serif", background:"#fafaf7", minHeight:"100vh", padding:"18px 16px" }}
           onClick={() => setPopover(null)}>
+
+          {cascadeToast && (
+            <div style={{ position:"fixed", bottom:24, left:"50%", transform:"translateX(-50%)", zIndex:3000,
+              background:"#1c2b1a", color:"#fff", borderRadius:10, padding:"11px 18px",
+              display:"flex", alignItems:"center", gap:14, boxShadow:"0 4px 20px rgba(0,0,0,0.3)",
+              fontSize:12, fontWeight:600, whiteSpace:"nowrap" }}>
+              <span>📅 {cascadeToast.msg}</span>
+              <button onClick={() => {
+                setTaskOverrides(cascadeToast.prevOverrides);
+                saveToCloud(checkedTasks, promotedOptional, cascadeToast.prevOverrides, doneOn);
+                setCascadeToast(null);
+              }} style={{ background:"#fff", color:"#1c2b1a", border:"none", borderRadius:6, padding:"4px 10px", fontSize:11, fontWeight:700, cursor:"pointer" }}>
+                Undo
+              </button>
+              <button onClick={() => setCascadeToast(null)} style={{ background:"none", border:"none", color:"rgba(255,255,255,0.6)", fontSize:16, cursor:"pointer", padding:0, lineHeight:1 }}>×</button>
+            </div>
+          )}
 
           {showSyncSettings && (
             <SyncSettingsModal
@@ -760,11 +928,21 @@
             <div style={{ position:"fixed", left:popover.x, top:popover.y, zIndex:1000 }} onClick={e => e.stopPropagation()}>
               <TaskPopover
                 plant={popover.plant}
-                taskIndex={popover.taskIndex}
+                taskKey={tKey(popover.plant.name, popover.taskIndex)}
                 task={popover.task}
                 isOptional={popover.isOptional}
                 isChecked={!!checkedTasks[tKey(popover.plant.name, popover.taskIndex)]}
-                onToggle={() => toggleTask(tKey(popover.plant.name, popover.taskIndex))}
+                doneOnDate={doneOn[tKey(popover.plant.name, popover.taskIndex)]}
+                override={taskOverrides[tKey(popover.plant.name, popover.taskIndex)]}
+                onToggle={() => toggleTask(tKey(popover.plant.name, popover.taskIndex), popover.plant, popover.taskIndex)}
+                onUpdateDates={(start, end) => {
+                  const k = tKey(popover.plant.name, popover.taskIndex);
+                  if (start === null) {
+                    setTaskOverrides(prev => { const n={...prev}; delete n[k]; saveToCloud(checkedTasks, promotedOptional, n, doneOn); return n; });
+                  } else {
+                    updateOverride(k, start, end);
+                  }
+                }}
                 onClose={() => setPopover(null)}
               />
             </div>
@@ -798,7 +976,7 @@
                 <div style={{ height:"100%",borderRadius:3,background:"#16a34a",width:`${totalTasks?(doneTasks/totalTasks)*100:0}%`,transition:"width 0.3s ease" }}/>
               </div>
               {doneTasks > 0 && (
-                <button onClick={e => { e.stopPropagation(); const n = {}; setCheckedTasks(n); saveToCloud(n, promotedOptional); }}
+                <button onClick={e => { e.stopPropagation(); const n = {}; setCheckedTasks(n); setDoneOn({}); saveToCloud(n, promotedOptional, taskOverrides, {}); }}
                   style={{ fontSize:10,color:"#dc2626",background:"none",border:"none",cursor:"pointer",padding:0,textDecoration:"underline" }}>
                   reset
                 </button>
@@ -961,24 +1139,73 @@
                               const origIdx  = plant.tasks.indexOf(task);
                               const key      = tKey(plant.name, origIdx);
                               const isDone   = !!checkedTasks[key];
-                              const {start,end} = taskWeeks(task);
+                              const ov       = taskOverrides[key];
+                              const effTask  = ov ? {...task, start: ov.start, end: ov.end} : task;
+                              const {start,end} = taskWeeks(effTask);
+                              const origWeeks = taskWeeks(task);
                               const color    = TASK_COLORS[task.type] || TASK_COLORS["Harvest"];
                               const label    = task.label || task.type;
                               const isActive = popover?.plant.name===plant.name && popover?.taskIndex===origIdx;
-                              const w        = (end-start)*CELL_W - 2;
+                              const w        = Math.max((end-start)*CELL_W - 2, 4);
+                              const duration = origWeeks.end - origWeeks.start;
+
+                              function startDrag(e) {
+                                if (isOptCat) return;
+                                e.preventDefault();
+                                const isTouch = e.type === "touchstart";
+                                const startX = isTouch ? e.touches[0].clientX : e.clientX;
+                                const startWeek = start;
+                                let dragged = false;
+
+                                function onMove(me) {
+                                  const cx = isTouch ? me.touches[0].clientX : me.clientX;
+                                  const delta = Math.round((cx - startX) / CELL_W);
+                                  if (delta !== 0) dragged = true;
+                                  const newStart = Math.max(0, Math.min(TOTAL_WEEKS - duration, startWeek + delta));
+                                  const newEnd   = newStart + duration;
+                                  // Convert weeks back to month/day for preview — stored in dragPreview
+                                  window._dragPreview = { key, newStart, newEnd };
+                                  // Force re-render by updating a ref-based approach — simpler: just update on drop
+                                }
+                                function onUp(ue) {
+                                  document.removeEventListener(isTouch?"touchmove":"mousemove", onMove);
+                                  document.removeEventListener(isTouch?"touchend":"mouseup", onUp);
+                                  if (!dragged) { openPopover(ue.changedTouches?ue:ue, plant, origIdx, task, isOptCat); return; }
+                                  if (window._dragPreview && window._dragPreview.key === key) {
+                                    const {newStart} = window._dragPreview;
+                                    delete window._dragPreview;
+                                    // Convert week back to approx month/day
+                                    let w2 = 0, mo = 0;
+                                    for (let i=0; i<12; i++) { if (w2 + WPM[i] > newStart) { mo=i; break; } w2+=WPM[i]; }
+                                    const dayFrac = (newStart - w2) / WPM[mo];
+                                    const day = Math.max(1, Math.round(dayFrac * 30));
+                                    let we = 0, me2 = 0;
+                                    const newEnd2 = newStart + duration;
+                                    for (let i=0; i<12; i++) { if (we + WPM[i] > newEnd2) { me2=i; break; } we+=WPM[i]; }
+                                    const dayFrac2 = (newEnd2 - we) / WPM[me2];
+                                    const day2 = Math.max(1, Math.round(dayFrac2 * 30));
+                                    updateOverride(key, [mo, day], [me2, day2]);
+                                  }
+                                }
+                                document.addEventListener(isTouch?"touchmove":"mousemove", onMove, {passive:false});
+                                document.addEventListener(isTouch?"touchend":"mouseup", onUp);
+                              }
+
                               return (
                                 <div key={ti}
-                                  onClick={e => openPopover(e, plant, origIdx, task, isOptCat)}
-                                  title={`${plant.name} · ${label} · ${MONTHS[task.start[0]]} ${task.start[1]}–${MONTHS[task.end[0]]} ${task.end[1]}${isDone?" · ✓ Done":""}`}
+                                  onClick={e => { if (!window._wasDrag) openPopover(e, plant, origIdx, task, isOptCat); window._wasDrag=false; }}
+                                  onMouseDown={startDrag}
+                                  onTouchStart={startDrag}
+                                  title={`${plant.name} · ${label} · ${MONTHS[effTask.start[0]]} ${effTask.start[1]}–${MONTHS[effTask.end[0]]} ${effTask.end[1]}${isDone?" · ✓ Done":""}${ov?" · rescheduled":""}`}
                                   style={{
                                     position:"absolute",left:start*CELL_W,width:w,height:18,top:(ROW_H-18)/2,
                                     background:color.bg,borderRadius:4,
                                     opacity:isOptCat?(isActive?0.55:0.35):isDone?0.42:(isActive?1:0.87),
-                                    cursor:"pointer",transition:"opacity 0.12s, transform 0.1s",
+                                    cursor:"grab",transition:"opacity 0.12s, transform 0.1s, left 0.1s, width 0.1s",
                                     transform:isActive?"scaleY(1.18)":"none",
                                     display:"flex",alignItems:"center",paddingLeft:4,overflow:"hidden",
                                     zIndex:isActive?5:1,
-                                    boxShadow:isActive?"0 2px 10px rgba(0,0,0,0.22)":"none",
+                                    boxShadow:isActive?"0 2px 10px rgba(0,0,0,0.22)":(ov?"0 0 0 1.5px #d97706":"none"),
                                   }}>
                                   {isDone && (
                                     <svg style={{ position:"absolute",inset:0,width:"100%",height:"100%",pointerEvents:"none" }} preserveAspectRatio="none">
